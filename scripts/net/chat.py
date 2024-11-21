@@ -17,7 +17,6 @@ def handle_incoming_connections(sock):
             print(f"Connection closed by {addr}")
             break
         print(f"Received: {data.decode()}")
-        conn.sendall(f"Echo: {data.decode()}".encode())
     conn.close()
 
 def connect_to_peer(ip, port):
@@ -37,8 +36,6 @@ def connect_to_peer(ip, port):
         if message.lower() == "exit":
             break
         peer_socket.sendall(message.encode())
-        response = peer_socket.recv(BUFFER_SIZE)
-        print(f"Response: {response.decode()}")
     peer_socket.close()
 
 def start_listener(ip, port):
@@ -48,6 +45,7 @@ def start_listener(ip, port):
     threading.Thread(target=handle_incoming_connections, args=(listener_socket,), daemon=True).start()
 
 if __name__ == "__main__":
+    # Set up CLI arguments
     parser = argparse.ArgumentParser(description="Bidirectional TCP Communication")
     parser.add_argument('--host_ip', type=str, required=True, help="Host IP address to bind the listener")
     parser.add_argument('--host_port', type=int, required=True, help="Host port to bind the listener")
@@ -57,5 +55,8 @@ if __name__ == "__main__":
 
     print("Starting bidirectional communication...")
 
+    # Start the listener thread
     start_listener(args.host_ip, args.host_port)
+
+    # Connect to the peer
     connect_to_peer(args.client_ip, args.client_port)
