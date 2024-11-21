@@ -6,7 +6,7 @@ class MyListener:
         print(f"Service added: {name}")
         info = zeroconf.get_service_info(service_type, name)
         if info:
-            print("Service details:")
+            print(f"Service details for {name}:")
             print(f"  Address: {socket.inet_ntoa(info.addresses[0])}")
             print(f"  Port: {info.port}")
             print(f"  Properties: {info.properties}")
@@ -15,11 +15,17 @@ class MyListener:
         print(f"Service removed: {name}")
 
 def discover_services(service_name):
-    """Discover services on the network."""
+    """Discover all services of a specific type."""
     zeroconf = Zeroconf()
     listener = MyListener()
+    
+    if not service_name.startswith("_"):
+        service_name = f"_{service_name}"
+    if not service_name.endswith("._tcp.local."):
+        service_name += "._tcp.local."
+
     print(f"Looking for services of type '{service_name}'...")
-    browser = ServiceBrowser(zeroconf, f"{service_name}._tcp.local.", listener)
+    browser = ServiceBrowser(zeroconf, service_name, listener)
     try:
         input("Press Enter to stop discovery...\n\n")
     finally:
