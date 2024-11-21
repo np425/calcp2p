@@ -1,96 +1,169 @@
 import socket
-import threading
+from zeroconf import Zeroconf, ServiceBrowser, ServiceInfo
+import uuid
 import argparse
-import time
+import threading
 
-BUFFER_SIZE = 1024
-BROADCAST_PORT = 12345  # Port for broadcasting
 
-def broadcast_server(ip, port):
-    """Broadcast server presence on the local network."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as broadcast_socket:
-        broadcast_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        message = f"SERVER:{ip}:{port}"
-        while True:
-            broadcast_socket.sendto(message.encode(), ('<broadcast>', BROADCAST_PORT))
-            time.sleep(5)  # Broadcast every 5 seconds
+class ChatApp:
+    def __init__(self, ip: str, port: int):
+        self.discovery = ServiceDiscovery(self, ip, port)
+        self.client = ChatClient(self, ip, port)
+        
+    def on_client_discovery(self, ip: str, port: int):
+        print(f'Discovered new client {ip}:{port}')
+        self.client.connect_client(ip, port)
+        
+    def on_client_connected(self, ip: str, port: int):
+        self.client.send_message(f'Hi {ip}:{port}')
+        
+    def on_client_added(self, conn: socket.socket):
+        ip, port = conn.getsockname()
+        print(f'New client added {ip}:{port}')
+        
+    def on_message_sent(self, conn: socket.socket, message: str):
+        ip, port = conn.getsockname()
+        print(f'{ip}:{port} sent {message}')
+        
+    def run(self):
+        self.discovery.listen()
+        self.client.run()
 
-def handle_client(conn, addr):
-    """Handle communication with a connected client."""
-    print(f"New connection from {addr}")
-    while True:
+class ChatClient:
+    def __init__(self, chat_app: ChatApp, ip: str, port: int):
+        self.chat_app = chat_app
+        self.ip = ip
+        self.port = port
+        self.server: socket.socket | None = None
+        self.clients: list[socket.socket] = []
+        
+    def connect_client(self, ip: str, port: int):
         try:
-            data = conn.recv(BUFFER_SIZE)
-            if not data:
-                print(f"Connection closed by {addr}")
+            # Create a server socket to listen on the discovered IP and port
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_socket.bind((ip, port))
+            server_socket.listen(5)
+            print(f"Listening on {ip}:{port}")
+
+            # Accept an incoming connection
+            conn, addr = server_socket.accept()
+            print(f"Connection received from {addr}")
+
+            self.chat_app.on_client_connected(conn)
+        except Exception as e:
+            print(f"Failed to listen on {ip}:{port}: {e}")
+        
+    def run(self):
+        # Create and bind the socket
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server.bind((self.ip, self.port))
+        self.server.listen(5)
+        print(f"ChatClient listening on {self.ip}:{self.port}")
+
+        # Start a thread to handle incoming messages from clients
+        threading.Thread(target=self.listen_to_clients, daemon=True).start()
+        
+        # Accept new client connections in the main thread
+        while True:
+            try:
+                conn, addr = self.server.accept()
+                print(f"New client connected from {addr}")
+                self.chat_app.on_client_connected(conn)
+            except Exception as e:
+                print(f"Error accepting new client: {e}")
                 break
-            print(f"Received from {addr}: {data.decode()}")
-        except ConnectionResetError:
-            print(f"Connection lost with {addr}")
-            break
-    conn.close()
 
-def listen_for_clients(host_ip, host_port):
-    """Listen for incoming client connections."""
-    listener_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    listener_socket.bind((host_ip, host_port))
-    listener_socket.listen()
-    print(f"Listening for clients on {host_ip}:{host_port}")
-    while True:
-        conn, addr = listener_socket.accept()
-        threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
-
-def discover_and_connect():
-    """Discover servers on the local network and connect to them."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
-        udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        udp_socket.bind(('', BROADCAST_PORT))
-        print(f"Listening for broadcast messages on port {BROADCAST_PORT}")
-        known_servers = set()
+    def listen_to_clients(self):
         while True:
-            data, addr = udp_socket.recvfrom(1024)
-            message = data.decode()
-            if message.startswith("SERVER:"):
-                server_ip, server_port = message.split(":")[1:]
-                if (server_ip, server_port) not in known_servers:
-                    known_servers.add((server_ip, server_port))
-                    print(f"Discovered server at {server_ip}:{server_port}")
-                    threading.Thread(target=connect_to_peer, args=(server_ip, int(server_port)), daemon=True).start()
+            for client in list(self.clients):  # Work on a copy of the list
+                try:
+                    message = client.recv(1024).decode()
+                    if message:
+                        print(f"Message received: {message}")
+                        self.chat_app.on_message_sent(client, message)
+                except Exception as e:
+                    print(f"Error in serve_messages: {e}")
+                    self.chat_app.connections.remove(client)
+                    client.close()
+                    
+    def send_message(self, message: str):
+        """Send the message to every connection."""
+        for client in self.clients:
+            try:
+                client.sendall(message.encode())
+                print(f"Sent message to {client.getpeername()}")
+            except Exception as e:
+                print(f"Failed to send message to {client.getpeername()}: {e}")
+                self.chat_app.connections.remove(client)
+                client.close()
 
-def connect_to_peer(ip, port):
-    """Connect to a peer and send messages."""
-    while True:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as peer_socket:
-                peer_socket.connect((ip, port))
-                print(f"Connected to peer at {ip}:{port}")
-                while True:
-                    message = input(f"Send to {ip}:{port}: ")
-                    if message.lower() == "exit":
-                        return
-                    peer_socket.sendall(message.encode())
-        except ConnectionRefusedError:
-            print(f"Connection to {ip}:{port} failed. Retrying in 5 seconds...")
-            time.sleep(5)
+    def __del__(self):
+        for client in self.clients:
+            client.close()
+            
+        self.server.close()
+
+class ServiceDiscovery:
+    def __init__(self, chat_app: ChatApp, ip: str, port: int):
+        self.chat_app = chat_app
+        self.ip = ip
+        self.port = port
+        self.service_name = '_calcp2p._tcp.local.'
+        self.instance_name = str(uuid.uuid4())
+        
+        self.zeroconf = Zeroconf()
+        self.service_info = ServiceInfo(
+            type_=self.service_name,
+            name=f"{self.instance_name}.{self.service_name}",  # Full instance name with service type
+            addresses=[socket.inet_aton(self.ip)],
+            port=self.port,
+            server=f"{socket.gethostname()}.local."
+        )
+        self.browser: ServiceBrowser | None = None
+
+        
+    def listen(self):
+        self.zeroconf.register_service(self.service_info)
+        print(f'Broadcasting {self.instance_name}.{self.service_name} on {self.ip}:{self.port}')
+        
+        self.browser = ServiceBrowser(self.zeroconf, self.service_name, self)
+        print(f'Searching for service {self.service_name}')
+        
+    def add_service(self, zeroconf: Zeroconf, service_type: str, name: str):
+        info = zeroconf.get_service_info(service_type, name)
+        if info is None:
+            return
+        
+        instance_name = name.split('.')[0]  # Get the part before the first dot
+
+        # Ignore the service if it matches the local hostname
+        if instance_name == self.instance_name:
+            print(f"Ignoring self-discovered instance: {instance_name}")
+            return
+        
+        if info:
+            ip = socket.inet_ntoa(info.addresses[0])
+            port = info.port
+            
+            self.chat_app.on_client_discovery(ip, port)
+            
+    def remove_service(self, zeroconf: Zeroconf, service_type: str, name: str):
+        pass
+
+    def update_service(self, zeroconf: Zeroconf, service_type: str, name: str):
+        pass
+                
+    def __del__(self):
+        self.zeroconf.unregister_service(self.service_info)
+        self.zeroconf.close()
+
 
 if __name__ == "__main__":
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Dynamic TCP Communication with Client Discovery")
-    parser.add_argument('--host_ip', type=str, required=True, help="Host IP address to bind the listener")
-    parser.add_argument('--host_port', type=int, required=True, help="Host port to bind the listener")
+    parser.add_argument('--ip', type=str, default='0.0.0.0', help="Host IP address to bind the listener")
+    parser.add_argument('--port', type=int, default=65432, help="Host port to bind the listener")
     args = parser.parse_args()
-
-    print("Starting server with dynamic client discovery...")
-
-    # Start the listener thread
-    threading.Thread(target=listen_for_clients, args=(args.host_ip, args.host_port), daemon=True).start()
-
-    # Start the broadcast thread
-    threading.Thread(target=broadcast_server, args=(args.host_ip, args.host_port), daemon=True).start()
-
-    # Start the discovery thread
-    threading.Thread(target=discover_and_connect, daemon=True).start()
-
-    # Keep the main thread alive
-    while True:
-        time.sleep(1)
+    
+    app = ChatApp(args.ip, args.port)
+    app.run()

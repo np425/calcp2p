@@ -12,9 +12,8 @@ def broadcast_service(ip, port, service_name):
         service_name += "._tcp.local."
 
     # Generate a unique instance name
-    instance_name = f"Node-{uuid.uuid4()}"
+    instance_name = str(uuid.uuid4())
 
-    desc = {'info': 'My unique service'}
     service_type = service_name  # Service type (e.g., _calcp2p._tcp.local.)
 
     # Create ServiceInfo object
@@ -23,7 +22,6 @@ def broadcast_service(ip, port, service_name):
         name=f"{instance_name}.{service_type}",  # Full instance name with service type
         addresses=[socket.inet_aton(ip)],
         port=port,
-        properties=desc,
         server=f"{socket.gethostname()}.local."
     )
     
