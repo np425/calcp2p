@@ -39,19 +39,14 @@ class ChatClient:
         
     def connect_client(self, ip: str, port: int):
         try:
-            # Create a server socket to listen on the discovered IP and port
-            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server_socket.bind((ip, port))
-            server_socket.listen(5)
-            print(f"Listening on {ip}:{port}")
-
-            # Accept an incoming connection
-            conn, addr = server_socket.accept()
-            print(f"Connection received from {addr}")
-
-            self.chat_app.on_client_connected(conn)
+            # Connect to the discovered client
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client_socket.settimeout(5)
+            client_socket.connect((ip, port))
+            self.clients.append(client_socket)
+            self.chat_app.on_client_connected(ip, port)
         except Exception as e:
-            print(f"Failed to listen on {ip}:{port}: {e}")
+            print(f"Failed to connect to client {ip}:{port}: {e}")
         
     def run(self):
         # Create and bind the socket
@@ -68,7 +63,6 @@ class ChatClient:
             try:
                 conn, addr = self.server.accept()
                 print(f"New client connected from {addr}")
-                self.chat_app.on_client_connected(conn)
             except Exception as e:
                 print(f"Error accepting new client: {e}")
                 break
@@ -83,7 +77,7 @@ class ChatClient:
                         self.chat_app.on_message_sent(client, message)
                 except Exception as e:
                     print(f"Error in serve_messages: {e}")
-                    self.chat_app.connections.remove(client)
+                    self.clients.remove(client)
                     client.close()
                     
     def send_message(self, message: str):
@@ -94,7 +88,7 @@ class ChatClient:
                 print(f"Sent message to {client.getpeername()}")
             except Exception as e:
                 print(f"Failed to send message to {client.getpeername()}: {e}")
-                self.chat_app.connections.remove(client)
+                self.clients.remove(client)
                 client.close()
 
     def __del__(self):
