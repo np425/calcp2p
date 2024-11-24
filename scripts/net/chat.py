@@ -3,6 +3,27 @@ from zeroconf import Zeroconf, ServiceBrowser, ServiceInfo
 import uuid
 import argparse
 import threading
+from enum import Enum
+from typing import NamedTuple
+import asyncio
+
+
+class NodeConnectionType(Enum):
+    ServerToClient = 1
+    ClientToServer = 2
+    
+class NodeConnection(NamedTuple):
+    ip: str
+    port: int
+    reader: asyncio.StreamReader
+    writer: asyncio.StreamWriter
+    connection_type: NodeConnectionType
+
+
+class Node:
+    def __init__(self, ip: str, port: int):
+        self.id = 
+        self.connection: NodeConnection | None = None
 
 
 class ChatApp:
