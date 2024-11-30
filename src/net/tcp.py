@@ -1,11 +1,13 @@
-from node import Connection, ActiveDiscovery
+from .node import Connection, ActiveDiscovery, DiscoverCallbackType, Node
 from enum import Enum
 import asyncio
-from uuid import UUID
 import socket
-from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser
-from uuid import uuid4
+from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser, IPVersion
+from uuid import uuid4, UUID
 import time
+from typing import Callable
+from collections import deque
+import threading
 
 
 class ConnectionType(Enum):
@@ -127,23 +129,28 @@ class TCPConnection(Connection):
 
 
 class TCPDiscovery(ActiveDiscovery):
-    def __init__(self, id: UUID):
-        super().__init__()
-        
+    def __init__(self, id: UUID, server_ip: str, server_port: int):
         self.id = id
-        self.zeroconf = ZeroconfService(self.id, self.server_ip, self.server_port)
+        self.server_ip = server_ip
+        self.server_port = server_port
         
-        # Start TCP Server 
+        self.zeroconf = ZeroconfService(self.id, self.server_ip, self.server_port)
+        self.tcp_server = TCPServer(self.server_ip, self.server_port)
+        
+    def register_callback(self, callback_type: DiscoverCallbackType, handler: Callable):
+        self.zeroconf.register_callback(callback_type, lambda _, node: handler(self, node))
     
     def start(self):
         self.zeroconf.start_listening()
         self.zeroconf.start_broadcasting()
+        self.tcp_server.start()
     
     def stop(self):
         self.zeroconf.stop()
+        self.tcp_server.stop()
     
     def is_active(self):
-        return self.zeroconf.is_listening() and self.zeroconf.is_broadcasting()
+        return self.zeroconf.is_listening() and self.tcp_server.is_running
 
 
 SERVICE_NAME = "_calcp2p._tcp.local."
@@ -157,6 +164,20 @@ class ZeroconfService:
         self.zeroconf: Zeroconf = Zeroconf()
         self.info: ServiceInfo | None = None
         self.browser: ServiceBrowser | None = None
+        
+        self.callbacks: set[tuple[DiscoverCallbackType, Callable]] = set()
+        self.nodes: deque[Node] = []
+        
+    def register_callback(self, callback_type: DiscoverCallbackType, handler: Callable):
+        self.callbacks.add((callback_type, handler))
+        
+    def unregister_callback(self, callback_type: DiscoverCallbackType, handler: Callable):
+        self.callbacks.remove((callback_type, handler))
+        
+    def _trigger_callback(self, callback_type: DiscoverCallbackType, *args, **kwargs):
+        for cb_type, handler in self._callbacks:
+            if cb_type == callback_type:
+                handler(*args, **kwargs)
 
     def start_broadcasting(self):
         try:
@@ -194,18 +215,39 @@ class ZeroconfService:
 
     def add_service(self, zeroconf: Zeroconf, service_type: str, name: str):
         info = zeroconf.get_service_info(service_type, name)
-        if info:
-            print(f"Service discovered: {name}")
-            print(f"Service info: IP={info.parsed_addresses()}, Port={info.port}")
+        if not info:
+            print(f'Service {name} has no info. Ignoring')
+            return
+        
+        ip = info.parsed_addresses(IPVersion.V4Only)[0]
+        port = info.port
+
+        print(f"Service discovered: {name}")
+        print(f"Service info: IP={ip}, Port={port}")
+            
+        instance = UUID(name.split('.')[0])
+
+        node = Node(instance)
+        connection = TCPConnection(ip, port)
+        node.add_connection(connection)
+        
+        self.nodes.append(node)
+            
+        self._trigger_callback(DiscoverCallbackType.OnDiscover, self, node)
 
     def remove_service(self, zeroconf: Zeroconf, service_type: str, name: str):
         print(f"Service removed: {name}")
+        
+        instance = UUID(name.split('.')[0])
+        node = next((node for node in self.nodes if node.id == instance), None)
+        
+        if node is not None:
+            self._trigger_callback(DiscoverCallbackType.OnRemove, self, node)
         
     def update_service(self, zeroconf: Zeroconf, service_type: str, name: str):
         pass
 
     def stop(self):
-        """Stop all Zeroconf operations."""
         if self.info:
             self.stop_broadcasting()
         if self.browser:
@@ -220,6 +262,64 @@ class ZeroconfService:
 
     def __del__(self):
         self.stop()
+
+
+class TCPServer:
+    # TODO: Callbacks
+    def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.bind((self.host, self.port))
+        self.server_socket.listen(5)  # Max 5 pending connections
+        self.is_running = False
+        self.client_handlers = []
+
+    def start(self):
+        self.is_running = True
+        print(f"TCP Server started on {self.host}:{self.port}")
+        threading.Thread(target=self._accept_connections, daemon=True).start()
+
+    def stop(self):
+        self.is_running = False
+        self.server_socket.close()
+        print("TCP Server stopped.")
+
+    def _accept_connections(self):
+        while self.is_running:
+            try:
+                client_socket, client_address = self.server_socket.accept()
+                print(f"New connection from {client_address}")
+                # Start a new thread to handle the client
+                client_thread = threading.Thread(target=self._handle_client, args=(client_socket,), daemon=True)
+                client_thread.start()
+                self.client_handlers.append(client_thread)
+            except OSError:
+                break  # Socket closed
+
+    def _handle_client(self, client_socket: socket.socket):
+        try:
+            while self.is_running:
+                data = client_socket.recv(1024)  # Receive up to 1024 bytes
+                if not data:
+                    break  # Client disconnected
+                print(f"Received: {data.decode('utf-8')}")
+                # Echo the data back to the client (for demonstration)
+                client_socket.sendall(data)
+        except ConnectionResetError:
+            print("Client disconnected abruptly.")
+        finally:
+            client_socket.close()
+            print("Connection closed.")
+
+    def send_message_to_all(self, message: str):
+        for thread in self.client_handlers:
+            try:
+                if thread.is_alive():
+                    # Send the message to all active connections
+                    thread.sendall(message.encode('utf-8'))
+            except Exception as e:
+                print(f"Failed to send message to a client: {e}")
 
 
 if __name__ == "__main__":

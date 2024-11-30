@@ -40,7 +40,7 @@ class Connection(ABC):
 class Node:
     def __init__(self, id: UUID):
         self._id = id
-        self._connections: deque[Connection] = []
+        self._connections: deque[Connection] = deque()
 
     @property
     def id(self) -> UUID:
@@ -92,24 +92,13 @@ class DiscoverCallbackType(Enum):
     OnDiscover = 1
     OnUpdate = 2
     OnRemove = 3
-
+    OnConnect = 4
+    OnDisconnect = 5
 
 class ActiveDiscovery(ABC):
-    def __init__(self):
-        self._callbacks: set[tuple[DiscoverCallbackType, Callable]] = set()
-
+    @abstractmethod
     def register_callback(self, callback_type: DiscoverCallbackType, handler: Callable):
-        self._callbacks.add((callback_type, handler))
-
-    def unregister_callback(
-        self, callback_type: DiscoverCallbackType, handler: Callable
-    ):
-        self._callbacks.remove((callback_type, handler))
-
-    def _trigger_callback(self, callback_type: DiscoverCallbackType, *args, **kwargs):
-        for cb_type, handler in self._callbacks:
-            if cb_type == callback_type:
-                handler(*args, **kwargs)
+        pass
 
     @abstractmethod
     def start(self):
