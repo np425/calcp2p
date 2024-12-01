@@ -1,0 +1,13 @@
+id: uuid4
+operations:
+  - LatitudeF = Latitude >= 54 and Latitude <= 56
+  - LongitudeF = Longitude >= 12 and Longitude <= 15
+  - Haversine = rad()
+  - SelectedFeatures: select("Timestamp", "MMSI", "Latitude", "Longitude", "SOG", "Heading", "Ship type")
+  - AvgDistance: groupby(MMSI).map(haversine(Latitude, Longitude)).mean()
+  - AvgTimeStep: groupby(MMSI).map(diff(Timestamp)).mean()
+  - Top5LongestDistances: groupby(MMSI).sum(haversine(Latitude, Longitude)).top(5)
+  - UniqueShipTypes: groupby("Ship type").nunique("MMSI")
+  - Statistics: describe(["Timestamp", "MMSI", "Latitude", "Longitude", "SOG", "Heading", "Ship type"])
+  - WeeklyAvgSOG: groupby(week(Timestamp)).mean(SOG)
+data:

@@ -92,8 +92,6 @@ class DiscoverCallbackType(Enum):
     OnDiscover = 1
     OnUpdate = 2
     OnRemove = 3
-    OnConnect = 4
-    OnDisconnect = 5
 
 class ActiveDiscovery(ABC):
     @abstractmethod
@@ -116,8 +114,13 @@ class ActiveDiscovery(ABC):
 class Network:
     def __init__(self):
         self.discoveries: set[Connection] = set()
-        self.nodes = dict[UUID, Node]
+        self.nodes: dict[UUID, Node] = {}
         self._id = uuid4()
+        print(f'Host ID: {self._id}')
+    
+    @property
+    def host_id(self) -> UUID:
+        return self._id
 
     def add_discovery(self, discovery: ActiveDiscovery):
         discovery.register_callback(
@@ -125,7 +128,7 @@ class Network:
         )
         discovery.register_callback(DiscoverCallbackType.OnUpdate, self._on_node_update)
         discovery.register_callback(DiscoverCallbackType.OnRemove, self._on_node_remove)
-        discovery.start_in_bg()
+        discovery.start()
         self.discoveries.add(discovery)
 
     def remove_discovery(self, discovery: ActiveDiscovery):
@@ -133,17 +136,24 @@ class Network:
         self.discoveries.remove(discovery)
 
     def add_node(self, node: Node):
-        self.nodes[node.id] = node
+        existing_node = self.nodes.get(node.id, None)
+        if not existing_node:
+            self.nodes[node.id] = node
+
+        for conn in node._connections:
+            existing_node.add_connection(conn)
 
     def remove_node(self, id: UUID):
         self.nodes.pop(id)
 
     def _on_node_discover(self, discovery: ActiveDiscovery, node: Node):
-        node.connect()
+        print(f'Network discovered new node {node.id}')
         self.add_node(node)
 
-    def _on_node_update(self, discovery: ActiveDiscovery, node: Node):
+    def _on_node_remove(self, discovery: ActiveDiscovery, node: Node):
+        print(f'Network removed node {node.id}')
         pass
 
-    def _on_node_remove(self, discovery: ActiveDiscovery, node: Node):
+    def _on_node_update(self, discovery: ActiveDiscovery, node: Node):
+        print(f'Network updated node {node.id}')
         pass
